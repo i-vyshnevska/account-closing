@@ -1,7 +1,6 @@
-# Copyright 2012-2018 Camptocamp SA
+# -*- coding: utf-8 -*-
+# Copyright 2012-2017 Camptocamp SA
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
-
-from datetime import timedelta
 
 from odoo import models, fields, api, _
 from odoo.exceptions import Warning as UserError
@@ -10,12 +9,11 @@ from odoo.exceptions import Warning as UserError
 class WizardCurrencyRevaluation(models.TransientModel):
 
     _name = 'wizard.currency.revaluation'
-    _description = 'Currency Revaluation Wizard'
 
     @api.model
     def _get_default_revaluation_date(self):
         """
-        Get today's date
+        Get last date of previous fiscalyear
         """
         return fields.date.today()
 
@@ -24,19 +22,12 @@ class WizardCurrencyRevaluation(models.TransientModel):
         """
         Get default journal if one is defined in company settings
         """
-        return self.env.user.company_id.currency_reval_journal_id
-
-    @api.model
-    def _get_default_label(self):
-        """
-        Get label
-        """
-        return "%(currency)s %(account)s %(rate)s currency revaluation"
+        return self.env.user.company_id.default_currency_reval_journal_id
 
     revaluation_date = fields.Date(
         string='Revaluation Date',
         required=True,
-        default=lambda self: self._get_default_revaluation_date(),
+        default=_get_default_revaluation_date
     )
     journal_id = fields.Many2one(
         comodel_name='account.journal',
@@ -44,7 +35,7 @@ class WizardCurrencyRevaluation(models.TransientModel):
         domain="[('type','=','general')]",
         help="You can set the default journal in company settings.",
         required=True,
-        default=lambda self: self._get_default_journal_id()
+        default=_get_default_journal_id
     )
     label = fields.Char(
         string='Entry description',
@@ -52,65 +43,9 @@ class WizardCurrencyRevaluation(models.TransientModel):
         help="This label will be inserted in entries description. "
              "You can use %(account)s, %(currency)s and %(rate)s keywords.",
         required=True,
-        default=lambda self: self._get_default_label(),
+        default="%(currency)s %(account)s "
+                "%(rate)s currency revaluation"
     )
-
-    def _create_move_and_lines(
-            self, amount, debit_account_id, credit_account_id,
-            sums, label, form, partner_id, currency_id,
-            analytic_debit_acc_id=False, analytic_credit_acc_id=False):
-
-        base_move = {
-            'journal_id': form.journal_id.id,
-            'date': form.revaluation_date,
-        }
-        if form.journal_id.company_id.reversable_revaluations:
-            base_move['auto_reverse'] = True
-            base_move['reverse_date'] = form.revaluation_date + timedelta(
-                days=1)
-
-        base_line = {
-            'name': label,
-            'partner_id': partner_id,
-            'currency_id': currency_id,
-            'amount_currency': 0.0,
-            'date': form.revaluation_date
-        }
-
-        base_line['gl_foreign_balance'] = sums.get('foreign_balance', 0.0)
-        base_line['gl_balance'] = sums.get('balance', 0.0)
-        base_line['gl_revaluated_balance'] = sums.get(
-            'revaluated_balance', 0.0)
-        base_line['gl_currency_rate'] = sums.get('currency_rate', 0.0)
-
-        debit_line = base_line.copy()
-        credit_line = base_line.copy()
-
-        debit_line.update({
-            'debit': amount,
-            'credit': 0.0,
-            'account_id': debit_account_id,
-        })
-
-        if analytic_debit_acc_id:
-            credit_line.update({
-                'analytic_account_id': analytic_debit_acc_id,
-            })
-
-        credit_line.update({
-            'debit': 0.0,
-            'credit': amount,
-            'account_id': credit_account_id,
-        })
-
-        if analytic_credit_acc_id:
-            credit_line.update({
-                'analytic_account_id': analytic_credit_acc_id,
-            })
-        base_move['line_ids'] = [(0, 0, debit_line), (0, 0, credit_line)]
-        created_move = self.env['account.move'].create(base_move)
-        created_move.post()
-        return [x.id for x in created_move.line_ids]
 
     @api.model
     def _compute_unrealized_currency_gl(self, currency_id, balances, form):
@@ -127,24 +62,20 @@ class WizardCurrencyRevaluation(models.TransientModel):
         context = self.env.context
 
         currency_obj = self.env['res.currency']
-        company = form.journal_id.company_id or form.env.user.company_id
 
         # Compute unrealized gain loss
         ctx_rate = context.copy()
         ctx_rate['date'] = form.revaluation_date
         cp_currency = form.journal_id.company_id.currency_id
 
-        currency = currency_obj.browse(currency_id)
+        currency = currency_obj.browse(currency_id).with_context(ctx_rate)
 
         foreign_balance = adjusted_balance = balances.get(
             'foreign_balance', 0.0)
         balance = balances.get('balance', 0.0)
         unrealized_gain_loss = 0.0
         if foreign_balance:
-            ctx_rate['revaluation'] = True
-            adjusted_balance = currency.with_context(ctx_rate)._convert(
-                foreign_balance, cp_currency, company, ctx_rate['date']
-            )
+            adjusted_balance = currency.compute(foreign_balance, cp_currency)
             unrealized_gain_loss = adjusted_balance - balance
             # revaluated_balance =  balance + unrealized_gain_loss
         else:
@@ -172,7 +103,7 @@ class WizardCurrencyRevaluation(models.TransientModel):
         currency = currency_obj.browse(currency_id)
         data = {'account': account.code or False,
                 'currency': currency.name or False,
-                'rate': rate and '{:.6f}'.format(rate) or False}
+                'rate': rate or False}
         return text % data
 
     @api.multi
@@ -189,8 +120,58 @@ class WizardCurrencyRevaluation(models.TransientModel):
         @return: ids of created move_lines
         """
 
+        def create_move_and_lines(amount, debit_account_id, credit_account_id,
+                                  sums, analytic_debit_acc_id=False,
+                                  analytic_credit_acc_id=False,):
+
+            reversable = form.journal_id.company_id.reversable_revaluations
+            base_move = {'name': label,
+                         'journal_id': form.journal_id.id,
+                         'date': form.revaluation_date,
+                         'to_be_reversed': reversable}
+
+            base_line = {'name': label,
+                         'partner_id': partner_id,
+                         'currency_id': currency_id,
+                         'amount_currency': 0.0,
+                         'date': form.revaluation_date}
+
+            base_line['gl_foreign_balance'] = sums.get('foreign_balance', 0.0)
+            base_line['gl_balance'] = sums.get('balance', 0.0)
+            base_line['gl_revaluated_balance'] = sums.get(
+                'revaluated_balance', 0.0)
+            base_line['gl_currency_rate'] = sums.get('currency_rate', 0.0)
+
+            debit_line = base_line.copy()
+            credit_line = base_line.copy()
+
+            debit_line.update({
+                'debit': amount,
+                'credit': 0.0,
+                'account_id': debit_account_id,
+            })
+            if analytic_debit_acc_id:
+                credit_line.update({
+                    'analytic_account_id': analytic_debit_acc_id,
+                })
+
+            credit_line.update({
+                'debit': 0.0,
+                'credit': amount,
+                'account_id': credit_account_id,
+            })
+            if analytic_credit_acc_id:
+                credit_line.update({
+                    'analytic_account_id': analytic_credit_acc_id,
+                })
+            base_move['line_ids'] = [(0, 0, debit_line), (0, 0, credit_line)]
+            created_move = self.env['account.move'].create(base_move)
+            created_move.post()
+            return [x.id for x in created_move.line_ids]
+
         if partner_id is None:
             partner_id = False
+
         company = form.journal_id.company_id or self.env.user.company_id
         created_ids = []
         # over revaluation
@@ -202,9 +183,8 @@ class WizardCurrencyRevaluation(models.TransientModel):
                                    if company.revaluation_analytic_account_id
                                    else False)
 
-                line_ids = self._create_move_and_lines(
-                    amount, account_id, reval_gain_account.id, sums, label,
-                    form, partner_id, currency_id,
+                line_ids = create_move_and_lines(
+                    amount, account_id, reval_gain_account.id, sums,
                     analytic_credit_acc_id=analytic_acc_id)
 
                 created_ids.extend(line_ids)
@@ -217,10 +197,9 @@ class WizardCurrencyRevaluation(models.TransientModel):
                     company.provision_pl_analytic_account_id.id or
                     False)
 
-                line_ids = self._create_move_and_lines(
+                line_ids = create_move_and_lines(
                     amount, company.provision_bs_gain_account_id.id,
-                    company.provision_pl_gain_account_id.id, sums, label,
-                    form, partner_id, currency_id,
+                    company.provision_pl_gain_account_id.id, sums,
                     analytic_credit_acc_id=analytic_acc_id)
 
                 created_ids.extend(line_ids)
@@ -235,9 +214,8 @@ class WizardCurrencyRevaluation(models.TransientModel):
                                    if company.revaluation_analytic_account_id
                                    else False)
 
-                line_ids = self._create_move_and_lines(
-                    amount, reval_loss_account.id, account_id, sums, label,
-                    form, partner_id, currency_id,
+                line_ids = create_move_and_lines(
+                    amount, reval_loss_account.id, account_id, sums,
                     analytic_debit_acc_id=analytic_acc_id)
 
                 created_ids.extend(line_ids)
@@ -250,24 +228,14 @@ class WizardCurrencyRevaluation(models.TransientModel):
                     company.provision_pl_analytic_account_id.id or
                     False)
 
-                line_ids = self._create_move_and_lines(
+                line_ids = create_move_and_lines(
                     amount, company.provision_pl_loss_account_id.id,
-                    company.provision_bs_loss_account_id.id, sums, label,
-                    form, partner_id, currency_id,
+                    company.provision_bs_loss_account_id.id, sums,
                     analytic_debit_acc_id=analytic_acc_id)
 
                 created_ids.extend(line_ids)
 
         return created_ids
-
-    @staticmethod
-    def _check_company(company):
-        return (not company.revaluation_loss_account_id and
-                not company.revaluation_gain_account_id and
-                not (company.provision_bs_loss_account_id and
-                     company.provision_pl_loss_account_id) and
-                not (company.provision_bs_gain_account_id and
-                     company.provision_pl_gain_account_id))
 
     @api.multi
     def revaluate_currency(self):
@@ -281,12 +249,17 @@ class WizardCurrencyRevaluation(models.TransientModel):
         account_obj = self.env['account.account']
 
         company = self.journal_id.company_id or self.env.user.company_id
-        if self._check_company(company):
-            raise UserError(
+        if (not company.revaluation_loss_account_id and
+            not company.revaluation_gain_account_id and
+            not (company.provision_bs_loss_account_id and
+                 company.provision_pl_loss_account_id) and
+            not (company.provision_bs_gain_account_id and
+                 company.provision_pl_gain_account_id)):
+            raise Warning(
                 _("No revaluation or provision account are defined"
                   " for your company.\n"
                   "You must specify at least one provision account or"
-                  " a couple of provision account in the accounting settings.")
+                  " a couple of provision account.")
             )
         created_ids = []
         # Search for accounts Balance Sheet to be revaluated
@@ -306,20 +279,22 @@ class WizardCurrencyRevaluation(models.TransientModel):
         # Get balance sums
         account_sums = account_ids.compute_revaluations(self.revaluation_date)
 
-        for account_id, account_tree in account_sums.items():
-            for partner_id, partner_tree in account_tree.items():
-                for currency_id, sums in partner_tree.items():
+        for account_id, account_tree in account_sums.iteritems():
+            for currency_id, currency_tree in account_tree.iteritems():
+                for partner_id, sums in currency_tree.iteritems():
+                    if not sums['balance']:
+                        continue
                     # Update sums with compute amount currency balance
                     diff_balances = self._compute_unrealized_currency_gl(
                         currency_id,
                         sums, self)
-                    account_sums[account_id][partner_id][currency_id].\
+                    account_sums[account_id][currency_id][partner_id].\
                         update(diff_balances)
 
         # Create entries only after all computation have been done
-        for account_id, account_tree in account_sums.items():
-            for partner_id, partner_tree in account_tree.items():
-                for currency_id, sums in partner_tree.items():
+        for account_id, account_tree in account_sums.iteritems():
+            for currency_id, currency_tree in account_tree.iteritems():
+                for partner_id, sums in currency_tree.iteritems():
                     adj_balance = sums.get('unrealized_gain_loss', 0.0)
                     if not adj_balance:
                         continue
