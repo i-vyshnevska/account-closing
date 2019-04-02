@@ -7,10 +7,10 @@ from odoo import models, fields
 class AccountConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
 
-    rate_type = fields.Selection(
+    revaluation_rate_type = fields.Selection(
         related='company_id.rate_type',
         string='Rate type *',
-        help="Revaluations entries will be created "
+        help="Define default currency rate type to be used for multicurrency revaluation."
              "as \"To Be Reversed\".",
         readonly=False,
     )

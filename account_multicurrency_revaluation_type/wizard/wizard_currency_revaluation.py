@@ -20,7 +20,7 @@ class WizardCurrencyRevaluationType(models.TransientModel):
     rate_type = fields.Selection(
         string='Rate type',
         selection=[
-            ('average', 'Average'),
+            ('monthly', 'Monthly Average'),
             ('daily', 'Daily'),
         ],
         default=lambda self: self._get_default_rate_type(),
