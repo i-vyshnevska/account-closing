@@ -3,7 +3,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from datetime import date
-import re
+from odoo.tools.safe_eval import safe_eval
 from odoo.tests.common import SavepointCase
 
 
@@ -152,22 +152,16 @@ class TestCurrencyRevaluationType(SavepointCase):
         self.assertAlmostEqual(sum(debit.mapped('balance')), -266.67)
 
     def _get_move_ids(self, result):
-        move_ids = []
-        lines = result['domain'].split(',')
-        for l in lines:
-            dig = re.search(r'\d+', l)
-            if dig:
-                move_ids.append(int(dig.group()))
-        move_ids = self.env['account.move.line'].browse(move_ids)
-        return move_ids
+        return self.env['account.move.line']. \
+            browse(safe_eval(result['domain'])[0][2])
 
-    def wizard_execute(self, date, type):
+    def wizard_execute(self, date, currency_type):
 
         data = {
             'revaluation_date': date,
             'journal_id': self.reval_journal.id,
             'label': '[%(account)s] [%(currency)s] wiz_test',
-            'rate_type': type,
+            'revaluation_rate_type': currency_type,
         }
         wiz = self.env['wizard.currency.revaluation'].create(data)
         return wiz.revaluate_currency()

@@ -122,7 +122,7 @@ class WizardCurrencyRevaluation(models.TransientModel):
         def create_move_and_lines(amount, debit_account_id, credit_account_id,
                                   sums, analytic_debit_acc_id=False,
                                   analytic_credit_acc_id=False,):
-
+            
             reversable = form.journal_id.company_id.reversable_revaluations
             base_move = {'name': label,
                          'journal_id': form.journal_id.id,
@@ -164,6 +164,8 @@ class WizardCurrencyRevaluation(models.TransientModel):
                     'analytic_account_id': analytic_credit_acc_id,
                 })
             base_move['line_ids'] = [(0, 0, debit_line), (0, 0, credit_line)]
+            import pdb
+            pdb.set_trace()
             created_move = self.env['account.move'].create(base_move)
             created_move.post()
             return [x.id for x in created_move.line_ids]
@@ -277,10 +279,11 @@ class WizardCurrencyRevaluation(models.TransientModel):
 
         # Get balance sums
         account_sums = account_ids.compute_revaluations(self.revaluation_date)
+        
 
-        for account_id, account_tree in account_sums.iteritems():
-            for currency_id, currency_tree in account_tree.iteritems():
-                for partner_id, sums in currency_tree.iteritems():
+        for account_id, account_tree in account_sums.items():
+            for currency_id, currency_tree in account_tree.items():
+                for partner_id, sums in currency_tree.items():
                     if not sums['balance']:
                         continue
                     # Update sums with compute amount currency balance
@@ -291,9 +294,10 @@ class WizardCurrencyRevaluation(models.TransientModel):
                         update(diff_balances)
 
         # Create entries only after all computation have been done
-        for account_id, account_tree in account_sums.iteritems():
-            for currency_id, currency_tree in account_tree.iteritems():
-                for partner_id, sums in currency_tree.iteritems():
+        for account_id, account_tree in account_sums.items():
+            for currency_id, currency_tree in account_tree.items():
+                for partner_id, sums in currency_tree.items():
+                    
                     adj_balance = sums.get('unrealized_gain_loss', 0.0)
                     if not adj_balance:
                         continue
@@ -306,6 +310,7 @@ class WizardCurrencyRevaluation(models.TransientModel):
                     )
 
                     # Write an entry to adjust balance
+                    
                     new_ids = self._write_adjust_balance(
                         account_id,
                         currency_id,

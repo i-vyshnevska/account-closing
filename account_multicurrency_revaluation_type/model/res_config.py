@@ -8,7 +8,7 @@ class AccountConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
 
     revaluation_rate_type = fields.Selection(
-        related='company_id.rate_type',
+        related='company_id.revaluation_rate_type',
         string='Rate type *',
         help="Define default currency rate type to be used for multicurrency revaluation."
              "as \"To Be Reversed\".",
